@@ -61,34 +61,33 @@ function ExpenseTracker() {
     });
   }, [bills, currentUser]);
 
-  // Real-time bills listener
+  // Real-time bills listener with proper filtering
   useEffect(() => {
     if (!currentUser) return;
 
-    const billsQuery = query(
-      collection(db, 'bills'),
-      orderBy('createdAt', 'desc')
+    const unsubscribe = onSnapshot(
+      query(collection(db, 'bills'), orderBy('createdAt', 'desc')),
+      (snapshot) => {
+        const allBills = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data(),
+          createdAt: doc.data().createdAt?.toDate()
+        }));
+
+        // Filter bills that involve current user
+        const userBills = allBills.filter(bill => 
+          bill.createdBy === currentUser.uid || 
+          bill.splitTo?.some(person => person.uid === currentUser.uid)
+        );
+
+        setBills(userBills);
+        setLoading(false);
+      },
+      (error) => {
+        console.error('Error fetching bills:', error);
+        setLoading(false);
+      }
     );
-
-    const unsubscribe = onSnapshot(billsQuery, (snapshot) => {
-      const allBills = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        createdAt: doc.data().createdAt?.toDate()
-      }));
-
-      // Filter bills that involve current user
-      const userBills = allBills.filter(bill => 
-        bill.createdBy === currentUser.uid || 
-        bill.splitTo?.some(person => person.uid === currentUser.uid)
-      );
-
-      setBills(userBills);
-      setLoading(false);
-    }, (error) => {
-      console.error('Error fetching bills:', error);
-      setLoading(false);
-    });
 
     return () => unsubscribe();
   }, [currentUser]);
@@ -141,7 +140,7 @@ function ExpenseTracker() {
     fetchFriends();
   }, [currentUser]);
 
-  // Calculate paid and owe amounts
+  // Calculate paid and owe amounts with real-time updates
   useEffect(() => {
     if (!currentUser) return;
 
@@ -176,7 +175,7 @@ function ExpenseTracker() {
     setYouOwe(owe);
   }, [bills, currentUser]);
 
-  // Toggle payment status for a user
+  // Toggle payment status for a user with real-time updates
   const togglePaymentStatus = async (billId, personUid, currentPaidBy) => {
     try {
       const docRef = doc(db, 'bills', billId);
@@ -184,13 +183,16 @@ function ExpenseTracker() {
         ? currentPaidBy.filter(person => person.uid !== personUid)
         : [...(currentPaidBy || []), { uid: personUid }];
 
-      await updateDoc(docRef, { paidBy: updatedPaidBy });
+      await updateDoc(docRef, { 
+        paidBy: updatedPaidBy,
+        updatedAt: serverTimestamp()
+      });
     } catch (error) {
       console.error('Error updating payment status:', error);
     }
   };
 
-  // Toggle overall bill status
+  // Toggle overall bill status with real-time updates
   const toggleStatus = async (billId, currentStatus) => {
     try {
       const billRef = doc(db, 'bills', billId);
@@ -204,7 +206,7 @@ function ExpenseTracker() {
     }
   };
 
-  // Delete bill
+  // Delete bill with real-time updates
   const deleteBill = async (billId) => {
     if (window.confirm('Are you sure you want to delete this bill?')) {
       try {
@@ -212,6 +214,40 @@ function ExpenseTracker() {
       } catch (error) {
         console.error('Error deleting bill:', error);
       }
+    }
+  };
+
+  // Add new bill with real-time updates
+  const handleAddBill = async (billData) => {
+    try {
+      const docRef = await addDoc(collection(db, 'bills'), {
+        ...billData,
+        paidBy: [],
+        createdAt: serverTimestamp(),
+        createdBy: currentUser.uid,
+        status: 'Pending'
+      });
+
+      // Send notifications to split members
+      if (billData.splitTo && billData.splitTo.length > 0) {
+        billData.splitTo.forEach(async (person) => {
+          await addDoc(collection(db, 'notifications'), {
+            type: 'expense_split',
+            userId: person.uid,
+            senderId: currentUser.uid,
+            senderName: currentUser.displayName || currentUser.email.split('@')[0],
+            message: `${currentUser.displayName || currentUser.email.split('@')[0]} split a bill with you: ${billData.description}`,
+            billId: docRef.id,
+            amount: billData.amount,
+            read: false,
+            createdAt: serverTimestamp()
+          });
+        });
+      }
+
+      console.log('Bill saved with ID:', docRef.id);
+    } catch (error) {
+      console.error('Error adding bill:', error);
     }
   };
 
@@ -492,38 +528,7 @@ function ExpenseTracker() {
       <AddBillModal
         isOpen={isAddModalOpen}
         onClose={() => setAddModalOpen(false)}
-        onSubmit={async (billData) => {
-          try {
-            const docRef = await addDoc(collection(db, 'bills'), {
-              ...billData,
-              paidBy: [],
-              createdAt: serverTimestamp(),
-              createdBy: currentUser.uid,
-              status: 'Pending'
-            });
-
-            // Send notifications to split members
-            if (billData.splitTo && billData.splitTo.length > 0) {
-              billData.splitTo.forEach(async (person) => {
-                await addDoc(collection(db, 'notifications'), {
-                  type: 'expense_split',
-                  userId: person.uid,
-                  senderId: currentUser.uid,
-                  senderName: currentUser.displayName || currentUser.email.split('@')[0],
-                  message: `${currentUser.displayName || currentUser.email.split('@')[0]} split a bill with you: ${billData.description}`,
-                  billId: docRef.id,
-                  amount: billData.amount,
-                  read: false,
-                  createdAt: serverTimestamp()
-                });
-              });
-            }
-
-            console.log('Bill saved with ID:', docRef.id);
-          } catch (error) {
-            console.error('Error adding bill:', error);
-          }
-        }}
+        onSubmit={handleAddBill}
       />
     </div>
   );

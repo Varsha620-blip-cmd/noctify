@@ -2,8 +2,8 @@ import { useState, useEffect } from 'react';
 import Navbar from '../components/Navbar';
 import Sidebar from '../components/Sidebar';
 import { useAuth } from '../context/AuthContext';
-import { updateProfile } from 'firebase/auth';
-import { doc, updateDoc, deleteDoc, collection, getDocs, query, where } from 'firebase/firestore';
+import { updateProfile, deleteUser } from 'firebase/auth';
+import { doc, updateDoc, deleteDoc, collection, getDocs, query, where, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 
 function Settings() {
@@ -50,7 +50,7 @@ function Settings() {
     setSettings(newSettings);
     localStorage.setItem('userSettings', JSON.stringify(newSettings));
     
-    setMessage(`${setting} ${newSettings[setting] ? 'enabled' : 'disabled'}`);
+    setMessage(`${setting.replace(/([A-Z])/g, ' $1').toLowerCase()} ${newSettings[setting] ? 'enabled' : 'disabled'}`);
     setTimeout(() => setMessage(''), 3000);
   };
 
@@ -99,23 +99,60 @@ function Settings() {
       setLoading(true);
       
       try {
+        const batch = writeBatch(db);
+
         // Clear user's exams
         const examsQuery = query(collection(db, 'users', currentUser.uid, 'exams'));
         const examsSnapshot = await getDocs(examsQuery);
-        const examDeletePromises = examsSnapshot.docs.map(doc => deleteDoc(doc.ref));
-        await Promise.all(examDeletePromises);
+        examsSnapshot.docs.forEach(doc => {
+          batch.delete(doc.ref);
+        });
 
         // Clear user's bills
         const billsQuery = query(collection(db, 'bills'), where('createdBy', '==', currentUser.uid));
         const billsSnapshot = await getDocs(billsQuery);
-        const billDeletePromises = billsSnapshot.docs.map(doc => deleteDoc(doc.ref));
-        await Promise.all(billDeletePromises);
+        billsSnapshot.docs.forEach(doc => {
+          batch.delete(doc.ref);
+        });
 
         // Clear user's notifications
         const notificationsQuery = query(collection(db, 'notifications'), where('userId', '==', currentUser.uid));
         const notificationsSnapshot = await getDocs(notificationsQuery);
-        const notificationDeletePromises = notificationsSnapshot.docs.map(doc => deleteDoc(doc.ref));
-        await Promise.all(notificationDeletePromises);
+        notificationsSnapshot.docs.forEach(doc => {
+          batch.delete(doc.ref);
+        });
+
+        // Clear user's friend requests
+        const friendRequestsQuery1 = query(collection(db, 'friendRequests'), where('senderId', '==', currentUser.uid));
+        const friendRequestsQuery2 = query(collection(db, 'friendRequests'), where('receiverId', '==', currentUser.uid));
+        const [frSnapshot1, frSnapshot2] = await Promise.all([
+          getDocs(friendRequestsQuery1),
+          getDocs(friendRequestsQuery2)
+        ]);
+        [...frSnapshot1.docs, ...frSnapshot2.docs].forEach(doc => {
+          batch.delete(doc.ref);
+        });
+
+        // Clear user's friendships
+        const friendsQuery1 = query(collection(db, 'friends'), where('user1', '==', currentUser.uid));
+        const friendsQuery2 = query(collection(db, 'friends'), where('user2', '==', currentUser.uid));
+        const [friendsSnapshot1, friendsSnapshot2] = await Promise.all([
+          getDocs(friendsQuery1),
+          getDocs(friendsQuery2)
+        ]);
+        [...friendsSnapshot1.docs, ...friendsSnapshot2.docs].forEach(doc => {
+          batch.delete(doc.ref);
+        });
+
+        // Clear user's status updates
+        const statusQuery = query(collection(db, 'status_updates'), where('userId', '==', currentUser.uid));
+        const statusSnapshot = await getDocs(statusQuery);
+        statusSnapshot.docs.forEach(doc => {
+          batch.delete(doc.ref);
+        });
+
+        // Commit all deletions
+        await batch.commit();
 
         // Clear localStorage
         localStorage.removeItem('userSettings');
@@ -146,7 +183,7 @@ function Settings() {
           await deleteDoc(doc(db, 'users', currentUser.uid));
           
           // Delete the user account
-          await currentUser.delete();
+          await deleteUser(currentUser);
           
           setMessage('Account deleted successfully. You will be redirected to login.');
           setTimeout(() => {
@@ -154,7 +191,11 @@ function Settings() {
           }, 2000);
         } catch (error) {
           console.error('Error deleting account:', error);
-          setMessage('Error deleting account. Please try again or contact support.');
+          if (error.code === 'auth/requires-recent-login') {
+            setMessage('Please log out and log back in, then try deleting your account again.');
+          } else {
+            setMessage('Error deleting account. Please try again or contact support.');
+          }
           setTimeout(() => setMessage(''), 5000);
         } finally {
           setLoading(false);
@@ -163,24 +204,74 @@ function Settings() {
     }
   };
 
-  const exportData = () => {
-    const userData = {
-      profile: profileData,
-      settings: settings,
-      exportDate: new Date().toISOString()
+  const exportData = async () => {
+    try {
+      setLoading(true);
+      
+      // Collect all user data
+      const userData = {
+        profile: profileData,
+        settings: settings,
+        exportDate: new Date().toISOString()
+      };
+
+      // Get exams
+      const examsQuery = query(collection(db, 'users', currentUser.uid, 'exams'));
+      const examsSnapshot = await getDocs(examsQuery);
+      userData.exams = examsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+      // Get bills
+      const billsQuery = query(collection(db, 'bills'), where('createdBy', '==', currentUser.uid));
+      const billsSnapshot = await getDocs(billsQuery);
+      userData.bills = billsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+      // Get friends
+      const friendsQuery1 = query(collection(db, 'friends'), where('user1', '==', currentUser.uid));
+      const friendsQuery2 = query(collection(db, 'friends'), where('user2', '==', currentUser.uid));
+      const [friendsSnapshot1, friendsSnapshot2] = await Promise.all([
+        getDocs(friendsQuery1),
+        getDocs(friendsQuery2)
+      ]);
+      userData.friends = [
+        ...friendsSnapshot1.docs.map(doc => ({ id: doc.id, ...doc.data() })),
+        ...friendsSnapshot2.docs.map(doc => ({ id: doc.id, ...doc.data() }))
+      ];
+      
+      const dataStr = JSON.stringify(userData, null, 2);
+      const dataBlob = new Blob([dataStr], { type: 'application/json' });
+      const url = URL.createObjectURL(dataBlob);
+      
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `noctify-data-${new Date().toISOString().split('T')[0]}.json`;
+      link.click();
+      
+      URL.revokeObjectURL(url);
+      setMessage('Data exported successfully!');
+      setTimeout(() => setMessage(''), 3000);
+    } catch (error) {
+      console.error('Error exporting data:', error);
+      setMessage('Error exporting data. Please try again.');
+      setTimeout(() => setMessage(''), 3000);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const resetSettings = () => {
+    const defaultSettings = {
+      notifications: true,
+      darkMode: false,
+      autoSync: true,
+      emailNotifications: true,
+      pushNotifications: true,
+      language: 'english',
+      currency: 'inr'
     };
     
-    const dataStr = JSON.stringify(userData, null, 2);
-    const dataBlob = new Blob([dataStr], { type: 'application/json' });
-    const url = URL.createObjectURL(dataBlob);
-    
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `noctify-data-${new Date().toISOString().split('T')[0]}.json`;
-    link.click();
-    
-    URL.revokeObjectURL(url);
-    setMessage('Data exported successfully!');
+    setSettings(defaultSettings);
+    localStorage.setItem('userSettings', JSON.stringify(defaultSettings));
+    setMessage('Settings reset to default values!');
     setTimeout(() => setMessage(''), 3000);
   };
 
@@ -199,8 +290,8 @@ function Settings() {
 
         {/* Success/Error Message */}
         {message && (
-          <div className={`mb-4 p-3 rounded-lg text-center font-medium ${
-            message.includes('Error') ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'
+          <div className={`mb-4 p-3 rounded-lg text-center font-medium animate-slideInDown ${
+            message.includes('Error') || message.includes('error') ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'
           }`}>
             {message}
           </div>
@@ -365,6 +456,15 @@ function Settings() {
                   <option value="jpy">JPY (¥)</option>
                 </select>
               </div>
+
+              <div className="flex justify-end">
+                <button
+                  onClick={resetSettings}
+                  className="px-4 py-2 text-sm bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
+                >
+                  Reset to Default
+                </button>
+              </div>
             </div>
           </div>
 
@@ -379,12 +479,13 @@ function Settings() {
             <div className="space-y-4">
               <div className="p-4 transition-all duration-200 bg-white rounded-xl hover:shadow-md">
                 <h3 className="font-medium text-[#424495] mb-2">Export Data</h3>
-                <p className="text-sm text-gray-600 mb-3">Download all your data in JSON format</p>
+                <p className="text-sm text-gray-600 mb-3">Download all your data including profile, exams, bills, and friends in JSON format</p>
                 <button
                   onClick={exportData}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                  disabled={loading}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
                 >
-                  Export Data
+                  {loading ? 'Exporting...' : 'Export Data'}
                 </button>
               </div>
             </div>
@@ -399,20 +500,29 @@ function Settings() {
               Danger Zone
             </h2>
             <div className="space-y-4">
-              <button 
-                onClick={handleClearAllData}
-                disabled={loading}
-                className="w-full px-6 py-3 text-white transition-all duration-200 transform bg-orange-600 md:w-auto rounded-xl hover:bg-orange-700 hover:scale-105 disabled:opacity-50"
-              >
-                {loading ? 'Clearing...' : 'Clear All Data'}
-              </button>
-              <button 
-                onClick={handleDeleteAccount}
-                disabled={loading}
-                className="w-full px-6 py-3 text-white transition-all duration-200 transform bg-red-600 md:w-auto rounded-xl hover:bg-red-700 hover:scale-105 md:ml-4 disabled:opacity-50"
-              >
-                {loading ? 'Deleting...' : 'Delete Account'}
-              </button>
+              <div className="p-4 bg-white rounded-xl">
+                <h3 className="font-medium text-red-600 mb-2">Clear All Data</h3>
+                <p className="text-sm text-gray-600 mb-3">This will permanently delete all your exams, bills, friends, and other data. Your account will remain active.</p>
+                <button 
+                  onClick={handleClearAllData}
+                  disabled={loading}
+                  className="px-4 py-2 text-white transition-all duration-200 transform bg-orange-600 rounded-lg hover:bg-orange-700 hover:scale-105 disabled:opacity-50"
+                >
+                  {loading ? 'Clearing...' : 'Clear All Data'}
+                </button>
+              </div>
+              
+              <div className="p-4 bg-white rounded-xl">
+                <h3 className="font-medium text-red-600 mb-2">Delete Account</h3>
+                <p className="text-sm text-gray-600 mb-3">This will permanently delete your account and all associated data. This action cannot be undone.</p>
+                <button 
+                  onClick={handleDeleteAccount}
+                  disabled={loading}
+                  className="px-4 py-2 text-white transition-all duration-200 transform bg-red-600 rounded-lg hover:bg-red-700 hover:scale-105 disabled:opacity-50"
+                >
+                  {loading ? 'Deleting...' : 'Delete Account'}
+                </button>
+              </div>
             </div>
           </div>
         </div>

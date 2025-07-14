@@ -11,6 +11,7 @@ function Navbar() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [isSearching, setIsSearching] = useState(false);
   const searchRef = useRef(null);
   const notificationRef = useRef(null);
   const { currentUser } = useAuth();
@@ -81,6 +82,7 @@ function Navbar() {
       return;
     }
 
+    setIsSearching(true);
     try {
       const usersRef = collection(db, 'users');
       const snapshot = await getDocs(usersRef);
@@ -98,6 +100,8 @@ function Navbar() {
       setShowSearchResults(true);
     } catch (error) {
       console.error('Error searching users:', error);
+    } finally {
+      setIsSearching(false);
     }
   };
 
@@ -164,11 +168,12 @@ function Navbar() {
         createdAt: serverTimestamp()
       });
 
-      alert('Friend request sent!');
+      alert('Friend request sent successfully!');
       setSearchQuery('');
       setShowSearchResults(false);
     } catch (error) {
       console.error('Error sending friend request:', error);
+      alert('Error sending friend request. Please try again.');
     }
   };
 
@@ -232,40 +237,55 @@ function Navbar() {
       <div className="relative w-full max-w-md md:w-1/3" ref={searchRef}>
         <input
           className="w-full p-3 pl-10 rounded-xl border border-[#FD8839] focus:outline-none focus:ring-2 focus:ring-[#F32D17] bg-gradient-to-r from-[#FD8839]/10 to-[#F32D17]/10 transition-all duration-200 focus:shadow-lg placeholder-gray-500"
-          placeholder="Search friends by name..."
+          placeholder="Search friends by name or email..."
           type="text"
           value={searchQuery}
           onChange={(e) => handleSearch(e.target.value)}
         />
         <span className="absolute left-3 top-1/2 transform -translate-y-1/2 transition-colors duration-200">
-          <svg width="20" height="20" fill="none" viewBox="0 0 24 24">
-            <circle cx="11" cy="11" r="7" stroke="#FD8839" strokeWidth="2"/>
-            <line x1="16.5" y1="16.5" x2="21" y2="21" stroke="#FD8839" strokeWidth="2" strokeLinecap="round"/>
-          </svg>
+          {isSearching ? (
+            <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-[#FD8839]"></div>
+          ) : (
+            <svg width="20" height="20" fill="none" viewBox="0 0 24 24">
+              <circle cx="11" cy="11" r="7" stroke="#FD8839" strokeWidth="2"/>
+              <line x1="16.5" y1="16.5" x2="21" y2="21" stroke="#FD8839" strokeWidth="2" strokeLinecap="round"/>
+            </svg>
+          )}
         </span>
 
         {/* Search Results Dropdown */}
-        {showSearchResults && searchResults.length > 0 && (
+        {showSearchResults && (
           <div className="absolute top-full left-0 right-0 mt-2 bg-white border border-gray-200 rounded-xl shadow-2xl z-50 max-h-80 overflow-y-auto animate-fadeInScale">
-            {searchResults.map((user) => (
-              <div key={user.uid} className="flex items-center justify-between p-4 hover:bg-gray-50 border-b last:border-b-0 transition-colors">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-gradient-to-r from-[#FD8839] to-[#F32D17] rounded-full flex items-center justify-center text-white font-bold">
-                    {(user.name || user.email).charAt(0).toUpperCase()}
-                  </div>
-                  <div>
-                    <p className="font-medium text-gray-900">{user.name || user.email.split('@')[0]}</p>
-                    <p className="text-sm text-gray-500">{user.email}</p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => sendFriendRequest(user.uid, user.name || user.email.split('@')[0])}
-                  className="px-4 py-2 bg-gradient-to-r from-[#FD8839] to-[#F32D17] text-white text-sm rounded-xl hover:from-[#F32D17] hover:to-[#C1000F] transition-all transform hover:scale-105"
-                >
-                  Add Friend
-                </button>
+            {isSearching ? (
+              <div className="p-4 text-center">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#FD8839] mx-auto"></div>
+                <p className="mt-2 text-gray-500">Searching...</p>
               </div>
-            ))}
+            ) : searchResults.length > 0 ? (
+              searchResults.map((user) => (
+                <div key={user.uid} className="flex items-center justify-between p-4 hover:bg-gray-50 border-b last:border-b-0 transition-colors">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 bg-gradient-to-r from-[#FD8839] to-[#F32D17] rounded-full flex items-center justify-center text-white font-bold">
+                      {(user.name || user.email).charAt(0).toUpperCase()}
+                    </div>
+                    <div>
+                      <p className="font-medium text-gray-900">{user.name || user.email.split('@')[0]}</p>
+                      <p className="text-sm text-gray-500">{user.email}</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => sendFriendRequest(user.uid, user.name || user.email.split('@')[0])}
+                    className="px-4 py-2 bg-gradient-to-r from-[#FD8839] to-[#F32D17] text-white text-sm rounded-xl hover:from-[#F32D17] hover:to-[#C1000F] transition-all transform hover:scale-105"
+                  >
+                    Add Friend
+                  </button>
+                </div>
+              ))
+            ) : (
+              <div className="p-4 text-center text-gray-500">
+                No users found
+              </div>
+            )}
           </div>
         )}
       </div>

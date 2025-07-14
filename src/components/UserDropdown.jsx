@@ -56,6 +56,7 @@ function UserDropdown() {
       navigate('/login');
     } catch (error) {
       console.error('Error signing out:', error);
+      alert('Error signing out. Please try again.');
     }
   };
 

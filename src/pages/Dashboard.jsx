@@ -18,6 +18,8 @@ function Dashboard() {
     recentNotifications: []
   });
   const [userAvatar, setUserAvatar] = useState('👤');
+  const [statusUpdates, setStatusUpdates] = useState([]);
+  const [friends, setFriends] = useState([]);
 
   // Load user avatar and listen for changes
   useEffect(() => {
@@ -34,6 +36,88 @@ function Dashboard() {
     window.addEventListener('avatarChanged', handleAvatarChange);
     return () => window.removeEventListener('avatarChanged', handleAvatarChange);
   }, []);
+
+  // Fetch friends list
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const fetchFriends = async () => {
+      try {
+        // Query both directions of friendships
+        const q1 = query(
+          collection(db, 'friends'),
+          where('user1', '==', currentUser.uid)
+        );
+        const q2 = query(
+          collection(db, 'friends'),
+          where('user2', '==', currentUser.uid)
+        );
+        
+        const [snapshot1, snapshot2] = await Promise.all([getDocs(q1), getDocs(q2)]);
+        
+        const friendsList = [
+          ...snapshot1.docs.map(doc => doc.data().user2),
+          ...snapshot2.docs.map(doc => doc.data().user1)
+        ];
+        
+        setFriends(friendsList);
+      } catch (error) {
+        console.error("Error fetching friends:", error);
+      }
+    };
+
+    fetchFriends();
+  }, [currentUser]);
+
+  // Fetch status updates from friends with 24-hour expiry
+  useEffect(() => {
+    if (!currentUser || friends.length === 0) return;
+
+    const friendIds = [...friends, currentUser.uid];
+    
+    // Split into chunks of 10 (Firestore 'in' query limit)
+    const chunks = [];
+    for (let i = 0; i < friendIds.length; i += 10) {
+      chunks.push(friendIds.slice(i, i + 10));
+    }
+
+    const unsubscribeCallbacks = chunks.map(chunk => {
+      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      
+      const q = query(
+        collection(db, 'status_updates'),
+        where('userId', 'in', chunk),
+        where('createdAt', '>', twentyFourHoursAgo),
+        orderBy('createdAt', 'desc'),
+        limit(20)
+      );
+
+      return onSnapshot(q, 
+        (snapshot) => {
+          const updates = snapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data(),
+            createdAt: doc.data().createdAt?.toDate(),
+          }));
+          
+          setStatusUpdates(prev => {
+            // Remove old updates from this chunk and add new ones
+            const filtered = prev.filter(u => !chunk.includes(u.userId));
+            return [...filtered, ...updates].sort((a, b) => 
+              (b.createdAt?.getTime() || 0) - (a.createdAt?.getTime() || 0)
+            );
+          });
+        },
+        (error) => {
+          console.error("Status updates error:", error);
+        }
+      );
+    });
+
+    return () => {
+      unsubscribeCallbacks.forEach(unsubscribe => unsubscribe());
+    };
+  }, [currentUser, friends]);
 
   useEffect(() => {
     const fetchDashboardData = async () => {
@@ -196,6 +280,20 @@ function Dashboard() {
     }
   };
 
+  const getTimeAgo = (date) => {
+    if (!date) return 'Just now';
+    const now = new Date();
+    const diffInMinutes = Math.floor((now - date) / (1000 * 60));
+    
+    if (diffInMinutes < 1) return 'Just now';
+    if (diffInMinutes < 60) return `${diffInMinutes}m ago`;
+    
+    const diffInHours = Math.floor(diffInMinutes / 60);
+    if (diffInHours < 24) return `${diffInHours}h ago`;
+    
+    return date.toLocaleDateString();
+  };
+
   return (
     <div className="flex bg-[#072D44]">
       <Sidebar />
@@ -234,7 +332,7 @@ function Dashboard() {
             </div>
           </div>
 
-          {/* Right section - Notifications */}
+          {/* Right section - Status Updates */}
           <div className="w-full md:w-1/3 animate-slideInRight">
             <div className="p-4 bg-[#D0D7E1] rounded-xl">
               <div className="flex items-center justify-between mb-2">
@@ -242,28 +340,28 @@ function Dashboard() {
                   <svg width="28" height="28" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg" className="animate-pulse">
                     <path d="M11.6667 24.5H16.3333C16.3333 25.7833 15.2833 26.8333 14 26.8333C12.7167 26.8333 11.6667 25.7833 11.6667 24.5ZM24.5 22.1667V23.3333H3.5V22.1667L5.83333 19.8333V12.8333C5.83333 9.21666 8.16667 6.06666 11.6667 5.01666V4.66666C11.6667 3.38333 12.7167 2.33333 14 2.33333C15.2833 2.33333 16.3333 3.38333 16.3333 4.66666V5.01666C19.8333 6.06666 22.1667 9.21666 22.1667 12.8333V19.8333L24.5 22.1667ZM19.8333 12.8333C19.8333 9.56666 17.2667 6.99999 14 6.99999C10.7333 6.99999 8.16667 9.56666 8.16667 12.8333V21H19.8333V12.8333Z" fill="#064469"/>
                   </svg>
-                  <h3 className="font-600 text-[#072D44]">Notifications</h3>
+                  <h3 className="font-600 text-[#072D44]">Friend Updates</h3>
                 </div>
                 <button className="text-sm text-[#064469] hover:underline">See all</button>
               </div>
               <ul className="mt-4 space-y-4 overflow-y-auto max-h-80">
-                {dashboardData.recentNotifications.length > 0 ? (
-                  dashboardData.recentNotifications.map((notification, index) => (
-                    <li key={index} className="flex items-center justify-between bg-gradient-to-r from-[#064469]/10 to-[#5790AB]/10 rounded-lg px-3 py-3 animate-slideInUp"
+                {statusUpdates.length > 0 ? (
+                  statusUpdates.slice(0, 5).map((update, index) => (
+                    <li key={update.id} className="flex items-start justify-between bg-gradient-to-r from-[#064469]/10 to-[#5790AB]/10 rounded-lg px-3 py-3 animate-slideInUp"
                       style={{
                         boxShadow: '-8px 5px 10px rgba(6, 68, 105, 0.3)',
                         animationDelay: `${index * 0.1}s`
                       }}>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-start gap-2">
                         <div className="w-8 h-8 bg-gradient-to-r from-[#064469] to-[#5790AB] rounded-full flex items-center justify-center text-white text-xs font-bold animate-pulse">
-                          {notification.senderName.charAt(0).toUpperCase()}
+                          {update.userId === currentUser?.uid ? 'Y' : 'F'}
                         </div>
-                        <div>
+                        <div className="flex-1">
                           <p className="text-sm font-medium text-[#072D44]">
-                            {notification.senderId === currentUser?.uid ? 'You' : notification.senderName}
+                            {update.userId === currentUser?.uid ? 'You' : 'Friend'}
                           </p>
-                          <p className="text-xs text-[#064469]">{getNotificationMessage(notification)}</p>
-                          <p className="text-xs text-[#5790AB]">{formatTime(notification.timestamp)}</p>
+                          <p className="text-xs text-[#064469] mt-1">{update.content}</p>
+                          <p className="text-xs text-[#5790AB] mt-1">{getTimeAgo(update.createdAt)}</p>
                         </div>
                       </div>
                       <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-[#064469] cursor-pointer hover:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -274,43 +372,13 @@ function Dashboard() {
                     </li>
                   ))
                 ) : (
-                  <>
-                    <li className="flex items-center justify-between bg-gradient-to-r from-[#064469]/10 to-[#5790AB]/10 rounded-lg px-3 py-3 animate-slideInUp"
-                      style={{
-                        boxShadow: '-8px 5px 10px rgba(6, 68, 105, 0.3)'
-                      }}>
-                      <span className="text-[#072D44]">Welcome to Noctify! 🎉</span>
-                      <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-[#064469] cursor-pointer" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <circle cx="12" cy="6" r="1.5"/>
-                        <circle cx="12" cy="12" r="1.5"/>
-                        <circle cx="12" cy="18" r="1.5"/>
-                      </svg>
-                    </li>
-                    <li className="flex items-center justify-between bg-gradient-to-r from-[#064469]/10 to-[#5790AB]/10 rounded-lg px-3 py-3 animate-slideInUp"
-                      style={{
-                        boxShadow: '-8px 5px 10px rgba(6, 68, 105, 0.3)',
-                        animationDelay: '0.1s'
-                      }}>
-                      <span className="text-[#072D44]">Start tracking your expenses 💰</span>
-                      <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-[#064469] cursor-pointer" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <circle cx="12" cy="6" r="1.5"/>
-                        <circle cx="12" cy="12" r="1.5"/>
-                        <circle cx="12" cy="18" r="1.5"/>
-                      </svg>
-                    </li>
-                    <li className="flex items-center justify-between bg-gradient-to-r from-[#064469]/10 to-[#5790AB]/10 rounded-lg px-3 py-3 animate-slideInUp"
-                      style={{
-                        boxShadow: '-8px 5px 10px rgba(6, 68, 105, 0.3)',
-                        animationDelay: '0.2s'
-                      }}>
-                      <span className="text-[#072D44]">Add your first exam 📚</span>
-                      <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-[#064469] cursor-pointer" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <circle cx="12" cy="6" r="1.5"/>
-                        <circle cx="12" cy="12" r="1.5"/>
-                        <circle cx="12" cy="18" r="1.5"/>
-                      </svg>
-                    </li>
-                  </>
+                  <li className="flex flex-col items-center justify-center py-8 text-center">
+                    <svg className="w-16 h-16 mb-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                    </svg>
+                    <p className="text-[#064469] font-medium">No new updates</p>
+                    <p className="text-sm text-[#5790AB] mt-1">Your friends haven't posted any status updates yet</p>
+                  </li>
                 )}
               </ul>
             </div>

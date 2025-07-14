@@ -141,9 +141,6 @@ function NotifyFriends() {
         createdAt: doc.data().createdAt?.toDate()
       }));
       setGroups(groupsData);
-      
-      // If no active group is selected and groups exist, don't auto-select
-      // Let user manually select a group
     }, (error) => {
       console.error("Error fetching groups:", error);
     });
@@ -198,6 +195,43 @@ function NotifyFriends() {
       const friend = friends.find(f => f.uid === memberId);
       return friend?.name || 'Unknown';
     });
+  };
+
+  // Create new group
+  const handleCreateGroup = async ({ groupName, members, avatar }) => {
+    try {
+      const docRef = await addDoc(collection(db, 'groups'), {
+        name: groupName,
+        members,
+        avatar: avatar || '👥',
+        createdAt: serverTimestamp(),
+        createdBy: currentUser.uid
+      });
+      
+      // Add notification to all group members
+      members.forEach(async (memberId) => {
+        if (memberId !== currentUser.uid) {
+          await addDoc(collection(db, 'notifications'), {
+            type: 'group_invite',
+            groupId: docRef.id,
+            groupName,
+            userId: memberId,
+            senderId: currentUser.uid,
+            senderName: currentUser.displayName || currentUser.email,
+            read: false,
+            createdAt: serverTimestamp()
+          });
+        }
+      });
+
+      setActiveGroupId(docRef.id);
+      setGroupModalOpen(false);
+      if (window.innerWidth < 768) {
+        setShowChatView(true);
+      }
+    } catch (err) {
+      console.error('Error creating group:', err);
+    }
   };
 
   return (
@@ -490,41 +524,7 @@ function NotifyFriends() {
         isOpen={isGroupModalOpen}
         onClose={() => setGroupModalOpen(false)}
         friends={friends}
-        onCreate={async ({ groupName, members, avatar }) => {
-          try {
-            const docRef = await addDoc(collection(db, 'groups'), {
-              name: groupName,
-              members,
-              avatar: avatar || '👥',
-              createdAt: serverTimestamp(),
-              createdBy: currentUser.uid
-            });
-            
-            // Add notification to all group members
-            members.forEach(async (memberId) => {
-              if (memberId !== currentUser.uid) {
-                await addDoc(collection(db, 'notifications'), {
-                  type: 'group_invite',
-                  groupId: docRef.id,
-                  groupName,
-                  userId: memberId,
-                  senderId: currentUser.uid,
-                  senderName: currentUser.displayName || currentUser.email,
-                  read: false,
-                  createdAt: serverTimestamp()
-                });
-              }
-            });
-
-            setActiveGroupId(docRef.id);
-            setGroupModalOpen(false);
-            if (window.innerWidth < 768) {
-              setShowChatView(true);
-            }
-          } catch (err) {
-            console.error('Error creating group:', err);
-          }
-        }}
+        onCreate={handleCreateGroup}
       />
     </div>
   );
