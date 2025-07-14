@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { signOut } from 'firebase/auth';
 import { auth } from '../firebase';
@@ -9,6 +9,7 @@ function UserDropdown() {
   const [showAvatarModal, setShowAvatarModal] = useState(false);
   const [selectedAvatar, setSelectedAvatar] = useState('👤');
   const dropdownRef = useRef(null);
+  const navigate = useNavigate();
   const { currentUser } = useAuth();
 
   const avatarOptions = [
@@ -51,6 +52,8 @@ function UserDropdown() {
     try {
       await signOut(auth);
       setIsOpen(false);
+      // Navigate to login page after successful logout
+      navigate('/login');
     } catch (error) {
       console.error('Error signing out:', error);
     }
